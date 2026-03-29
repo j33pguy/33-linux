@@ -1,0 +1,29 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: [self-hosted, homelab]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Go
+        run: go version
+
+      - name: Verify protoc
+        run: protoc --version
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
