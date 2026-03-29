@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package file.v1;
+
+option go_package = "github.com/j33pguy/33-linux/proto/file/v1";
+
+message StoreFileRequest {
+  string path = 1;
+  bytes data = 2;
+  string session_token = 3;
+}
+
+message StoreFileResponse {
+  string file_id = 1;
+  bool queued_for_sync = 2;
+}
+
+message LoadFileRequest {
+  string path = 1;
+  string session_token = 2;
+}
+
+message LoadFileResponse {
+  bytes data = 1;
+  int64 modified_at = 2;
+}
+
+service FileService {
+  rpc StoreFile(StoreFileRequest) returns (StoreFileResponse);
+  rpc LoadFile(LoadFileRequest) returns (LoadFileResponse);
+}

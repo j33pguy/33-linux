@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package net.v1;
+
+option go_package = "github.com/j33pguy/33-linux/proto/net/v1";
+
+message SyncQueueRequest {
+  string session_token = 1;
+}
+
+message SyncQueueResponse {
+  int32 items_synced = 1;
+  int32 items_remaining = 2;
+}
+
+message APIGetRequest {
+  string endpoint = 1;
+  string session_token = 2;
+}
+
+message APIGetResponse {
+  int32 status_code = 1;
+  bytes body = 2;
+}
+
+service NetService {
+  rpc SyncQueue(SyncQueueRequest) returns (SyncQueueResponse);
+  rpc APIGet(APIGetRequest) returns (APIGetResponse);
+}

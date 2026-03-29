@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package crypto.v1;
+
+option go_package = "github.com/j33pguy/33-linux/proto/crypto/v1";
+
+message EncryptRequest {
+  bytes plaintext = 1;
+  bytes key = 2;
+}
+
+message EncryptResponse {
+  bytes ciphertext = 1;
+  bytes nonce = 2;
+}
+
+message DecryptRequest {
+  bytes ciphertext = 1;
+  bytes key = 2;
+  bytes nonce = 3;
+}
+
+message DecryptResponse {
+  bytes plaintext = 1;
+}
+
+service CryptoService {
+  rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+  rpc Decrypt(DecryptRequest) returns (DecryptResponse);
+}

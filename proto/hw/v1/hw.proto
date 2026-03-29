@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package hw.v1;
+
+option go_package = "github.com/j33pguy/33-linux/proto/hw/v1";
+
+message DetectDevicesRequest {
+  string session_token = 1;
+}
+
+message Device {
+  string id = 1;
+  string type = 2;
+  string name = 3;
+  string path = 4;
+}
+
+message DetectDevicesResponse {
+  repeated Device devices = 1;
+}
+
+message AuthDeviceRequest {
+  string device_id = 1;
+  string session_token = 2;
+}
+
+message AuthDeviceResponse {
+  bool authorized = 1;
+  string container_id = 2;
+}
+
+service HWSpawnerService {
+  rpc DetectDevices(DetectDevicesRequest) returns (DetectDevicesResponse);
+  rpc AuthDevice(AuthDeviceRequest) returns (AuthDeviceResponse);
+}

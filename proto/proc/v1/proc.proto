@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package proc.v1;
+
+option go_package = "github.com/j33pguy/33-linux/proto/proc/v1";
+
+message SpawnProcRequest {
+  string binary = 1;
+  repeated string args = 2;
+  string session_token = 3;
+}
+
+message SpawnProcResponse {
+  int32 pid = 1;
+  string status = 2;
+}
+
+message SpawnLXCRequest {
+  string container_name = 1;
+  string image = 2;
+  string session_token = 3;
+}
+
+message SpawnLXCResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+service ProcService {
+  rpc SpawnProc(SpawnProcRequest) returns (SpawnProcResponse);
+  rpc SpawnLXC(SpawnLXCRequest) returns (SpawnLXCResponse);
+}
