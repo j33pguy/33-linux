@@ -19,20 +19,26 @@
 
 Two independent hardware factors are required for system access:
 
-#### TPM 2.0 (Platform Identity)
+```mermaid
+graph LR
+    subgraph "Factor 1 — Platform"
+        TPM["TPM 2.0<br/>Soldered to board"]
+        TPM --> T1["Measured boot chain"]
+        TPM --> T2["Key sealed to PCR values"]
+        TPM --> T3["Cannot be removed"]
+    end
 
-- **Purpose:** Proves the device is authentic and hasn't been tampered with
-- **Measured boot:** PCR values reflect the exact boot chain (firmware → bootloader → kernel → initrd). Any modification changes the measurements, preventing key unsealing.
-- **Key sealing:** The disk encryption master key is sealed to specific PCR values. It can only be unsealed on the correct device with the correct software.
-- **Anti-cloning:** TPM endorsement key is unique per chip, burned at manufacturing. Cannot be extracted or copied.
+    subgraph "Factor 2 — Person"
+        YK["YubiKey Bio<br/>External, removable"]
+        YK --> Y1["FIDO2 / PIV credential"]
+        YK --> Y2["Biometric fingerprint"]
+        YK --> Y3["Physical presence required"]
+    end
 
-#### YubiKey (User Identity)
+    TPM & YK --> UNLOCK["Both required to unlock"]
 
-- **Purpose:** Proves the human is authorized
-- **FIDO2/WebAuthn:** Hardware-bound credential for authentication challenges
-- **PIV:** X.509 certificate storage for mTLS with cloud backend
-- **Biometric (YubiKey Bio):** Fingerprint verification — no passwords to remember or phish
-- **Physical presence:** Required for sensitive operations (app installs, settings changes, recovery)
+    style UNLOCK fill:#0f3460,color:#fff,stroke:#e94560
+```
 
 #### Why Both?
 
@@ -58,53 +64,65 @@ If both device AND YubiKey are lost: recover from cloud backup to a new device w
 
 ### Secure Boot Chain
 
-```
-UEFI Firmware (platform key)
-  └── Verify: Bootloader (signed by 33-Linux CA)
-       └── Verify: Kernel + initrd (signed by 33-Linux CA)
-            └── Verify: squashfs root image (dm-verity hash tree)
-                 └── TPM: Extend PCR values at each stage
-                      └── Unseal master key (only if PCRs match)
+```mermaid
+flowchart TD
+    FW["UEFI Firmware<br/>Platform Key"] --> BL
+    BL["Bootloader<br/>Signed by 33-Linux CA"] --> KRN
+    KRN["Kernel + initrd<br/>Signed by 33-Linux CA"] --> SQ
+    SQ["squashfs root image<br/>dm-verity hash tree"] --> PCR
+    PCR["TPM: Extend PCR values<br/>at each stage"] --> UNSEAL
+    UNSEAL["Unseal master key<br/>Only if PCRs match expected values"]
+
+    style UNSEAL fill:#0f3460,color:#fff,stroke:#e94560
 ```
 
 ### Kernel Hardening
 
 Compile-time security options:
 
-```
-CONFIG_SECURITY_YAMA=y           # ptrace restrictions
-CONFIG_MODULE_SIG=y              # Only signed kernel modules
-CONFIG_MODULE_SIG_FORCE=y        # Reject unsigned modules
-CONFIG_STACKPROTECTOR_STRONG=y   # Stack buffer overflow protection
-CONFIG_FORTIFY_SOURCE=y          # Compile-time buffer overflow detection
-CONFIG_STRICT_DEVMEM=y           # Restrict /dev/mem access
-CONFIG_IO_STRICT_DEVMEM=y        # Restrict I/O memory access
-CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y
-CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y   # Zero memory on allocation
-CONFIG_INIT_ON_FREE_DEFAULT_ON=y    # Zero memory on free
-```
+| Option | Purpose |
+|--------|---------|
+| `CONFIG_SECURITY_YAMA=y` | ptrace restrictions |
+| `CONFIG_MODULE_SIG=y` | Only signed kernel modules |
+| `CONFIG_MODULE_SIG_FORCE=y` | Reject unsigned modules |
+| `CONFIG_STACKPROTECTOR_STRONG=y` | Stack buffer overflow protection |
+| `CONFIG_FORTIFY_SOURCE=y` | Compile-time buffer overflow detection |
+| `CONFIG_STRICT_DEVMEM=y` | Restrict /dev/mem access |
+| `CONFIG_IO_STRICT_DEVMEM=y` | Restrict I/O memory access |
+| `CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y` | Kernel lockdown |
+| `CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y` | Zero memory on allocation |
+| `CONFIG_INIT_ON_FREE_DEFAULT_ON=y` | Zero memory on free |
 
 Runtime parameters (kernel command line):
 
 ```
-lockdown=confidentiality
-init_on_alloc=1
-init_on_free=1
-page_alloc.shuffle=1
-slab_nomerge
-vsyscall=none
+lockdown=confidentiality init_on_alloc=1 init_on_free=1
+page_alloc.shuffle=1 slab_nomerge vsyscall=none
 ```
 
 ### Update Verification
 
 OS updates are distributed as signed squashfs images:
 
-1. Download new image from cloud backend (or local mirror)
-2. Verify Ed25519 signature against pinned public key
-3. Verify dm-verity hash tree integrity
-4. Write to inactive partition (A/B scheme)
-5. Update bootloader to point to new partition
-6. Reboot; if boot fails, automatic rollback to previous partition
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Update Server
+    participant D as Disk
+
+    C->>S: Check for update
+    S-->>C: New image + Ed25519 signature
+    C->>C: Verify signature against pinned public key
+    C->>C: Verify dm-verity hash tree
+    C->>D: Write to inactive partition (A/B scheme)
+    C->>D: Update bootloader → point to new partition
+    C->>C: Reboot
+    alt Boot succeeds
+        C->>C: Mark new partition as good
+    else Boot fails
+        C->>D: Automatic rollback to previous partition
+    end
+```
 
 ## Service Isolation
 
@@ -121,36 +139,60 @@ Each ring runs with progressively fewer capabilities:
 
 ### Unix Socket Permissions
 
-Each ring has its own socket with strict permissions:
+```mermaid
+graph TD
+    subgraph "Ring 3 — User Space"
+        CLI["CLI / Desktop"]
+    end
 
-```
-/run/33linux/ring0.sock   → 0600, owned by ring0:ring0
-/run/33linux/ring1/*.sock → 0600, owned by ring1_{svc}:ring2
-/run/33linux/ring2.sock   → 0600, owned by ring2:ring3
+    subgraph "Ring 2 — Gateway"
+        R2S["/run/33linux/ring2.sock<br/>0600 ring2:ring3"]
+    end
+
+    subgraph "Ring 1 — Services"
+        R1A["/run/33linux/ring1/authd.sock<br/>0600 ring1_authd:ring2"]
+        R1F["/run/33linux/ring1/filed.sock<br/>0600 ring1_filed:ring2"]
+        R1N["/run/33linux/ring1/netd.sock<br/>0600 ring1_netd:ring2"]
+    end
+
+    subgraph "Ring 0 — Crypto"
+        R0S["/run/33linux/ring0.sock<br/>0600 ring0:ring0"]
+    end
+
+    CLI -->|SO_PEERCRED verified| R2S
+    R2S -->|SO_PEERCRED verified| R1A & R1F & R1N
+    R1A & R1F -->|SO_PEERCRED verified| R0S
+
+    CLI -.->|"❌ DENIED"| R0S
+    CLI -.->|"❌ DENIED"| R1A
 ```
 
 `SO_PEERCRED` is checked on every connection to verify the calling process's UID/GID matches the expected ring.
 
 ### Application Containers
 
-Each user-facing application runs in its own LXC container:
+```mermaid
+graph TD
+    subgraph "Per-App LXC Containers"
+        B["Browser<br/>Chromium"]
+        E["Email<br/>App LXC"]
+        F["Files<br/>App LXC"]
+    end
 
-```
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Browser    │  │    Email     │  │   Files      │
-│  (Chromium)  │  │  (app LXC)  │  │  (app LXC)   │
-├──────────────┤  ├──────────────┤  ├──────────────┤
-│ PID ns       │  │ PID ns       │  │ PID ns       │
-│ Mount ns     │  │ Mount ns     │  │ Mount ns     │
-│ Net ns       │  │ Net ns       │  │ Net ns       │
-│ User ns      │  │ User ns      │  │ User ns      │
-│ Cgroup v2    │  │ Cgroup v2    │  │ Cgroup v2    │
-└──────────────┘  └──────────────┘  └──────────────┘
-      │                  │                  │
-      └──────────────────┼──────────────────┘
-                         │
-              Wayland socket passthrough
-              (display only, no filesystem)
+    subgraph "Isolation per Container"
+        NS["PID ns + Mount ns + Net ns + User ns + Cgroup v2"]
+    end
+
+    B & E & F --> NS
+    B & E & F -->|"Wayland socket<br/>display only"| COMP["Wayland Compositor"]
+
+    B x--x E
+    E x--x F
+    B x--x F
+
+    style B fill:#533483,color:#fff
+    style E fill:#0f3460,color:#fff
+    style F fill:#1a1a2e,color:#fff
 ```
 
 **Isolation guarantees:**
@@ -179,17 +221,16 @@ All persistent data is encrypted using AES-256-GCM:
 
 ### Key Management
 
-```
-TPM-sealed Master Key
-  │
-  ├── HKDF-SHA256(master, "session:" + boot_id) → Session Key
-  │     └── Used for runtime operations, never persists
-  │
-  ├── HKDF-SHA256(master, "file:" + path_hash) → File Key
-  │     └── Used for chunk encryption, derived deterministically
-  │
-  └── HKDF-SHA256(master, "vault:" + entry_id) → Vault Entry Key
-        └── Used for 33Vault password entries
+```mermaid
+graph TD
+    HW["TPM-sealed Master Key"] --> SK["Session Key<br/>HKDF(master, 'session:' + boot_id)<br/>Runtime only, never persists"]
+    HW --> FK["File Key<br/>HKDF(master, 'file:' + path_hash)<br/>Per-file chunk encryption"]
+    HW --> VK["Vault Key<br/>HKDF(master, 'vault:' + entry_id)<br/>33Vault password entries"]
+
+    style HW fill:#e94560,color:#fff,stroke:#e94560
+    style SK fill:#0f3460,color:#fff
+    style FK fill:#0f3460,color:#fff
+    style VK fill:#0f3460,color:#fff
 ```
 
 **Phase 1 limitation:** Master key is generated randomly per session (no TPM integration yet). This means data encrypted in one session can't be decrypted in the next. Phase 2 adds TPM-sealed persistent keys.

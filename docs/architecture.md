@@ -16,9 +16,16 @@
 
 Inspired by CPU privilege rings, the service architecture enforces strict call hierarchies:
 
-```
-Ring 3 ──► Ring 2 ──► Ring 1 ──► Ring 0
- (UI)    (gateway)  (services)  (crypto)
+```mermaid
+graph LR
+    R3["Ring 3<br/>CLI / Desktop / Apps"] -->|"gRPC, user token"| R2["Ring 2<br/>gated (policy gateway)"]
+    R2 -->|"validated, rebuilt request"| R1["Ring 1<br/>authd, filed, netd,<br/>procsd, hwspawn"]
+    R1 -->|"crypto operations"| R0["Ring 0<br/>cryptd, 33Vault"]
+
+    style R0 fill:#1a1a2e,color:#e94560,stroke:#e94560
+    style R1 fill:#16213e,color:#53a8b6,stroke:#53a8b6
+    style R2 fill:#0f3460,color:#e94560,stroke:#e94560
+    style R3 fill:#533483,color:#fff,stroke:#533483
 ```
 
 ### Ring 0: Hardware Security
@@ -94,44 +101,30 @@ The user-facing layer. Can only communicate with Ring 2. Never has direct access
 
 ## Boot Sequence
 
-```
-Power On
-  │
-  ▼
-UEFI Secure Boot → Verify signed kernel + initrd
-  │
-  ▼
-Kernel (hardened) → Load minimal modules (signed only)
-  │
-  ▼
-Go initd (PID 1)
-  ├── Mount /proc, /sys
-  ├── Mount squashfs root (read-only)
-  ├── Mount overlayfs (tmpfs upper layer)
-  ├── TPM: Unseal master key (bound to PCR values)
-  ├── YubiKey: Challenge-response for user auth
-  │
-  ▼
-Start Ring 0 services
-  ├── cryptd (receives unsealed master key)
-  └── 33Vault
-  │
-  ▼
-Start Ring 2
-  └── gated (policy gateway)
-  │
-  ▼
-Start Ring 1 services (via gated registration)
-  ├── authd
-  ├── filed
-  ├── netd
-  ├── procsd
-  └── hwspawn → scans /sys/class → spawns device containers
-  │
-  ▼
-Start Ring 3
-  ├── Wayland compositor
-  └── Desktop shell / Login screen
+```mermaid
+flowchart TD
+    A[Power On] --> B[UEFI Secure Boot]
+    B -->|Verify signed kernel + initrd| C[Hardened Kernel]
+    C -->|Load signed modules only| D[Go initd — PID 1]
+    D --> D1[Mount /proc, /sys]
+    D --> D2[Mount squashfs root RO]
+    D --> D3[Mount overlayfs — tmpfs upper]
+    D --> D4[TPM: Unseal master key]
+    D --> D5[YubiKey: Challenge-response]
+    D4 & D5 --> E[Start Ring 0]
+    E --> E1[cryptd]
+    E --> E2[33Vault]
+    E1 & E2 --> F[Start Ring 2]
+    F --> F1[gated]
+    F1 --> G[Start Ring 1]
+    G --> G1[authd]
+    G --> G2[filed]
+    G --> G3[netd]
+    G --> G4[procsd]
+    G --> G5[hwspawn → device containers]
+    G1 & G2 & G3 & G4 & G5 --> H[Start Ring 3]
+    H --> H1[Wayland Compositor]
+    H --> H2[Desktop Shell / Login]
 ```
 
 ### Dev Mode
@@ -146,13 +139,17 @@ When `DEV_MODE=1`, the init system:
 
 ### Immutable Root
 
-```
-/                    ← overlayfs (merged view)
-├── /ro-root/        ← squashfs image (read-only, verified)
-├── /tmp/upper/      ← tmpfs (volatile writes, lost on reboot)
-├── /tmp/work/       ← overlayfs workdir
-├── /var/cache/33linux/  ← local file cache (plaintext, volatile)
-└── /var/sync-queue/     ← encrypted chunks awaiting sync
+```mermaid
+graph TD
+    ROOT["/ — overlayfs merged view"] --> RO["/ro-root/<br/>squashfs — read-only, dm-verity verified"]
+    ROOT --> UPPER["/tmp/upper/<br/>tmpfs — volatile writes, lost on reboot"]
+    ROOT --> WORK["/tmp/work/<br/>overlayfs workdir"]
+    ROOT --> CACHE["/var/cache/33linux/<br/>local file cache — plaintext, volatile"]
+    ROOT --> QUEUE["/var/sync-queue/<br/>encrypted chunks awaiting sync"]
+
+    style RO fill:#1a1a2e,color:#fff
+    style UPPER fill:#533483,color:#fff
+    style QUEUE fill:#0f3460,color:#fff
 ```
 
 Any write to the filesystem goes to the tmpfs upper layer. On reboot, it's gone. Persistent data must be explicitly stored through `filed`, which encrypts and queues it for cloud sync.
@@ -161,27 +158,18 @@ Any write to the filesystem goes to the tmpfs upper layer. On reboot, it's gone.
 
 Files stored through `filed` are split using FastCDC (content-defined chunking) with a target range of 4-16KB:
 
-```
-Input File (5MB)
-  │
-  ▼ FastCDC (rolling hash, content-defined boundaries)
-  ├── Chunk A (4,127 bytes)
-  ├── Chunk B (8,943 bytes)
-  ├── Chunk C (6,201 bytes)
-  └── ... (hundreds of chunks)
-  │
-  ▼ Per-Chunk Processing
-  ├── Encrypt(chunk, derived_key) → AES-256-GCM
-  ├── Hash(encrypted_chunk) → SHA-256 → dedup key
-  └── Store in /var/sync-queue/{hash}.enc
-  │
-  ▼ Manifest
-  manifest_v1.json = {
-    "path": "/home/user/photo.jpg",
-    "version": 1,
-    "chunks": ["sha256_a", "sha256_b", "sha256_c", ...],
-    "created": "2026-03-29T09:50:00Z"
-  }
+```mermaid
+flowchart TD
+    FILE["Input File — 5MB"] --> CDC["FastCDC<br/>rolling hash, content-defined boundaries"]
+    CDC --> CA["Chunk A — 4,127 bytes"]
+    CDC --> CB["Chunk B — 8,943 bytes"]
+    CDC --> CC["Chunk C — 6,201 bytes"]
+    CDC --> CD["... hundreds of chunks"]
+    CA & CB & CC & CD --> ENC["Per-Chunk Processing"]
+    ENC --> E1["Encrypt — AES-256-GCM with derived key"]
+    E1 --> E2["Hash — SHA-256 of ciphertext → dedup key"]
+    E2 --> E3["Store in /var/sync-queue/hash.enc"]
+    E3 --> MAN["Manifest v1<br/>Ordered list of chunk hashes"]
 ```
 
 **Why content-defined (not fixed-size):** Inserting a byte at the start of a file with fixed-size chunks would change every chunk boundary, destroying deduplication. CDC boundaries are determined by content, so insertions only affect nearby chunks.
@@ -192,73 +180,97 @@ Input File (5MB)
 
 ### File Store
 
-```
-User saves file
-  → Ring 3 (CLI/Desktop) calls gated.StoreFile()
-    → Ring 2 (gated) validates token, rebuilds request
-      → Ring 1 (filed) receives validated request
-        → filed chunks the file (FastCDC)
-        → For each chunk:
-          → filed calls Ring 0 (cryptd.Encrypt) with derived key
-          → Encrypted chunk stored in /var/sync-queue/
-        → filed creates manifest, stores in cache
-        → filed queues manifest for sync
-      → Response propagates back through rings
+```mermaid
+sequenceDiagram
+    participant U as User / CLI
+    participant R2 as Ring 2 — gated
+    participant R1 as Ring 1 — filed
+    participant R0 as Ring 0 — cryptd
+    participant Q as Sync Queue
+
+    U->>R2: StoreFile(path, data, token)
+    R2->>R2: Validate token, rebuild request
+    R2->>R1: Validated StoreFile request
+    R1->>R1: FastCDC → split into chunks
+    loop For each chunk
+        R1->>R0: Encrypt(chunk, derived_key)
+        R0-->>R1: ciphertext + nonce
+        R1->>Q: Store {hash}.enc
+    end
+    R1->>R1: Create manifest, store in cache
+    R1-->>R2: StoreFileResponse
+    R2-->>U: Success + file_id
 ```
 
 ### Cloud Sync
 
-```
-netd queue drain (periodic or on-connect)
-  → Scan /var/sync-queue/ for pending chunks
-  → For each chunk:
-    → mTLS POST to cloud backend /api/v1/chunks/{hash}
-    → Server stores encrypted blob (cannot decrypt)
-    → On ack, remove from local queue
-  → Push updated manifests
-  → Pull any remote changes (other devices)
-  → Conflict resolution: server-wins or timestamp-based (configurable)
+```mermaid
+sequenceDiagram
+    participant N as netd
+    participant Q as Sync Queue
+    participant S as Cloud Server
+
+    N->>Q: Scan for pending chunks
+    loop For each chunk
+        N->>S: HEAD /api/v1/chunks/{hash}
+        alt Chunk exists
+            S-->>N: 200 OK — skip
+        else Chunk missing
+            N->>S: PUT /api/v1/chunks/{hash}
+            S-->>N: 201 Created
+        end
+        N->>Q: Remove synced chunk
+    end
+    N->>S: PUT /api/v1/manifests/{path}
+    S-->>N: 200 OK
+    N->>S: GET /api/v1/manifests — pull remote changes
+    S-->>N: Remote manifests
+    N->>N: Conflict resolution
 ```
 
 ### Offline Behavior
 
-```
-No network detected
-  → All writes queue locally in /var/sync-queue/
-  → Queue bounded by tmpfs size (configurable, default 1GB)
-  → User sees normal operation (reads from cache, writes succeed)
-  → Status indicator shows "offline" in UI
+```mermaid
+stateDiagram-v2
+    [*] --> Online
+    Online --> Offline : Network lost
+    Offline --> Online : Network restored
 
-Network restored
-  → netd detects connectivity
-  → Begins draining queue (oldest first)
-  → Pulls any remote changes
-  → Resolves conflicts per policy
+    state Online {
+        [*] --> Syncing
+        Syncing --> Idle : Queue empty
+        Idle --> Syncing : New write queued
+    }
+
+    state Offline {
+        [*] --> Queuing
+        Queuing --> Queuing : Writes queue locally
+    }
+
+    Online --> Draining : Reconnect with pending queue
+    Draining --> Syncing : Queue drained
+    Draining --> Conflict : Version mismatch
+    Conflict --> Syncing : Resolved — server-wins + conflict copy
 ```
 
 ## Cloud Backend Architecture
 
 The server is a Go monolith with clear separation:
 
-```
-┌─────────────────────────────────────┐
-│            Cloud Server             │
-├─────────────┬───────────────────────┤
-│   Auth      │  JWT from YubiKey/    │
-│   Service   │  TPM challenge        │
-├─────────────┼───────────────────────┤
-│   Sync      │  Receive/serve        │
-│   Service   │  encrypted chunks     │
-├─────────────┼───────────────────────┤
-│   Version   │  Manifest history,    │
-│   Service   │  rollback support     │
-├─────────────┼───────────────────────┤
-│   Fleet     │  Device policies,     │
-│   Service   │  subscription mgmt    │
-├─────────────┼───────────────────────┤
-│   Blob      │  Directory-based      │
-│   Store     │  /users/{id}/blobs/   │
-└─────────────┴───────────────────────┘
+```mermaid
+graph TD
+    subgraph "Cloud Server"
+        AUTH["Auth Service<br/>JWT from YubiKey/TPM challenge"]
+        SYNC["Sync Service<br/>Receive/serve encrypted chunks"]
+        VER["Version Service<br/>Manifest history, rollback"]
+        FLEET["Fleet Service<br/>Device policies, subscriptions"]
+        BLOB[("Blob Store<br/>/users/{id}/blobs/{hash}.enc")]
+    end
+
+    AUTH --> BLOB
+    SYNC --> BLOB
+    VER --> BLOB
+    FLEET --> AUTH
 ```
 
 **The server never sees plaintext.** All encryption/decryption happens client-side. The server stores opaque encrypted blobs and manifests. Even a full server compromise yields nothing useful.

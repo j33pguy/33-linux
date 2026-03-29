@@ -16,24 +16,16 @@ Every app runs in its own container. Every file is chunked, encrypted, and versi
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│                    Ring 3                        │
-│          CLI / Wayland Desktop / Apps            │
-│              (user-facing layer)                 │
-├─────────────────────────────────────────────────┤
-│                    Ring 2                        │
-│              gated (policy gateway)              │
-│     validates → rebuilds → routes requests       │
-├─────────────────────────────────────────────────┤
-│                    Ring 1                        │
-│     authd │ filed │ netd │ procsd │ hwspawn     │
-│        (core services, isolated)                 │
-├─────────────────────────────────────────────────┤
-│                    Ring 0                        │
-│            cryptd │ 33Vault                      │
-│    (hardware-bound keys, crypto operations)      │
-└─────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    R3["Ring 3<br/>CLI / Desktop / Apps"] -->|"gRPC, user token"| R2["Ring 2<br/>gated — policy gateway"]
+    R2 -->|"validated, rebuilt"| R1["Ring 1<br/>authd, filed, netd,<br/>procsd, hwspawn"]
+    R1 -->|"crypto ops"| R0["Ring 0<br/>cryptd, 33Vault"]
+
+    style R0 fill:#1a1a2e,color:#e94560,stroke:#e94560
+    style R1 fill:#16213e,color:#53a8b6,stroke:#53a8b6
+    style R2 fill:#0f3460,color:#e94560,stroke:#e94560
+    style R3 fill:#533483,color:#fff,stroke:#533483
 ```
 
 **Ring isolation rules:**
@@ -61,26 +53,28 @@ All inter-ring communication is gRPC over Unix sockets with per-ring permission 
 
 ### Dual-Factor Hardware Authentication
 
-```
-TPM (soldered to board)              YubiKey (external, biometric)
-├── Platform identity                ├── User identity
-├── Measured boot chain              ├── FIDO2 / PIV credential
-├── Disk encryption key sealed       ├── Biometric fingerprint
-│   to PCR values                    ├── Required for sensitive ops
-└── Cannot be removed                └── Can be replaced (with recovery)
-
-         Both required to unlock the system
+```mermaid
+graph LR
+    subgraph "Factor 1 — Platform"
+        TPM["TPM 2.0<br/>Soldered to board"]
+    end
+    subgraph "Factor 2 — Person"
+        YK["YubiKey Bio<br/>External, biometric"]
+    end
+    TPM & YK --> UNLOCK["🔓 Both required to unlock"]
+    style UNLOCK fill:#0f3460,color:#fff,stroke:#e94560
 ```
 
 Compromise one → still locked out. Steal the device → useless without the YubiKey. Steal the YubiKey → useless without the device.
 
 ### Key Hierarchy
 
-```
-Hardware Root (TPM PCR-sealed + YubiKey challenge)
-  └─ Master Key (derived at boot, lives only in memory)
-       └─ Session Keys (ephemeral, per-boot, crypto/rand)
-            └─ Per-Chunk Keys (AES-256-GCM, derived from session + content hash)
+```mermaid
+graph TD
+    HW["Hardware Root<br/>TPM PCR-sealed + YubiKey challenge"] --> MK["Master Key<br/>Derived at boot, lives only in memory"]
+    MK --> SK["Session Keys<br/>Ephemeral, per-boot, crypto/rand"]
+    SK --> CK["Per-Chunk Keys<br/>AES-256-GCM, derived from session + content hash"]
+    style HW fill:#e94560,color:#fff
 ```
 
 ### Threat Model
@@ -99,17 +93,15 @@ Hardware Root (TPM PCR-sealed + YubiKey challenge)
 
 Files aren't stored as files. They're split into variable-size chunks using a rolling hash (FastCDC), individually encrypted, and referenced by content hash.
 
-```
-photo.jpg (5MB)
-    │
-    ▼  Content-Defined Chunking
-    ├── chunk_a (4KB) → AES-256-GCM encrypt → sha256 hash
-    ├── chunk_b (8KB) → AES-256-GCM encrypt → sha256 hash
-    ├── chunk_c (6KB) → AES-256-GCM encrypt → sha256 hash
-    └── ...
-    │
-    ▼  Manifest
-    v1: [chunk_a_hash, chunk_b_hash, chunk_c_hash, ...]
+```mermaid
+flowchart LR
+    FILE["photo.jpg<br/>5MB"] --> CDC["FastCDC"]
+    CDC --> A["chunk_a<br/>4KB"]
+    CDC --> B["chunk_b<br/>8KB"]
+    CDC --> C["chunk_c<br/>6KB"]
+    A & B & C --> ENC["AES-256-GCM<br/>encrypt"]
+    ENC --> HASH["SHA-256<br/>hash ciphertext"]
+    HASH --> MAN["Manifest v1<br/>[hash_a, hash_b, hash_c, ...]"]
 ```
 
 **Benefits:**
