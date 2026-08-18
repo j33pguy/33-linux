@@ -272,3 +272,7 @@ Self-hosters are first-class citizens. The subscription service funds developmen
 <p align="center">
   <strong>33-Linux</strong> — Because your grandmother deserves better security than most corporations have.
 </p>
+
+---
+
+<p align="center"><strong>Don't Panic. Hack the Planet.</strong></p>
